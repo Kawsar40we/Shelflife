@@ -1,0 +1,38 @@
+{
+  "entities": {
+    "catalog": {
+      "title": "Catalog Articles",
+      "description": "Master shelf life catalog items scanned and verified across all store devices",
+      "fields": {
+        "articleCode": { "type": "string", "description": "Unique article code" },
+        "articleDescription": { "type": "string", "description": "Product title up to 40 characters" },
+        "barcode": { "type": "string", "description": "EAN / UPC barcode digits" },
+        "shelfLifeDays": { "type": "number", "description": "Original master shelf life in days" },
+        "userUpdatedShelfLifeDays": { "type": "number", "description": "Corrected shelf life in days when WRONG" },
+        "category": { "type": "string", "description": "Product department / category" },
+        "status": { "type": "string", "description": "Status: pending, verified, corrected" },
+        "lastAuditResult": { "type": "string", "description": "Audit result: CORRECT or WRONG" },
+        "lastVerifiedAt": { "type": "string", "description": "ISO timestamp of last verification" },
+        "verifiedBy": { "type": "string", "description": "USER or ADMIN" },
+        "createdAt": { "type": "string", "description": "ISO timestamp of creation" }
+      }
+    },
+    "audits": {
+      "title": "Audit Logs",
+      "description": "Historical audit logs for shelf life verification",
+      "fields": {
+        "articleId": { "type": "string", "description": "Reference to article document ID" },
+        "articleCode": { "type": "string", "description": "Article code audited" },
+        "articleDescription": { "type": "string", "description": "Product title" },
+        "barcode": { "type": "string", "description": "Barcode scanned" },
+        "category": { "type": "string", "description": "Product category" },
+        "result": { "type": "string", "description": "CORRECT or WRONG" },
+        "shelfLifeDays": { "type": "number", "description": "Original shelf life days" },
+        "userUpdatedShelfLifeDays": { "type": "number", "description": "Corrected shelf life days if WRONG" },
+        "role": { "type": "string", "description": "Role of user who performed audit" },
+        "timestamp": { "type": "string", "description": "ISO timestamp" },
+        "notes": { "type": "string", "description": "Optional notes" }
+      }
+    }
+  }
+}

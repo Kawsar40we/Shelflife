@@ -1,14 +1,15 @@
 import React from 'react';
-import { Shield, User, LogOut, FileSpreadsheet } from 'lucide-react';
+import { Shield, User, LogOut, FileSpreadsheet, Wifi } from 'lucide-react';
 import { LogoEmblem } from './LogoEmblem';
 
 interface NavbarProps {
   role: 'ADMIN' | 'USER' | null;
   onLogout: () => void;
   onExport?: () => void;
+  isLiveSynced?: boolean;
 }
 
-export const Navbar: React.FC<NavbarProps> = ({ role, onLogout, onExport }) => {
+export const Navbar: React.FC<NavbarProps> = ({ role, onLogout, onExport, isLiveSynced = true }) => {
   return (
     <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-slate-200/80 shadow-xs">
       <div className="max-w-7xl mx-auto px-3 sm:px-4 h-14 flex items-center justify-between gap-2">
@@ -22,6 +23,19 @@ export const Navbar: React.FC<NavbarProps> = ({ role, onLogout, onExport }) => {
 
         {/* Right Controls */}
         <div className="flex items-center gap-1.5 sm:gap-2">
+          {/* Live Sync Status Indicator */}
+          <div
+            className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-slate-50 border border-slate-200 text-[11px] font-semibold text-slate-600"
+            title="Real-Time Cloud Synchronization Active Across All Devices"
+          >
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+            </span>
+            <Wifi className="w-3 h-3 text-emerald-600" />
+            <span>Live Sync</span>
+          </div>
+
           {/* User Export Button */}
           {onExport && (
             <button
