@@ -92,7 +92,6 @@ export default function App() {
       articleDescription: String(item.articleDescription || '').slice(0, 40).trim(),
       barcode: String(item.barcode || '').trim(),
       shelfLifeDays: Number(item.shelfLifeDays) || 1,
-      userUpdatedShelfLifeDays: undefined,
       category: String(item.category || 'General').slice(0, 40).trim(),
       status: 'pending',
       createdAt: new Date().toISOString()
@@ -314,7 +313,13 @@ export default function App() {
 
   // If no role selected, render Login Screen
   if (!role) {
-    return <LoginScreen onSelectRole={handleSelectRole} />;
+    return (
+      <LoginScreen
+        onSelectRole={handleSelectRole}
+        itemCount={articles.length}
+        isLiveSynced={isLiveSynced}
+      />
+    );
   }
 
   return (
