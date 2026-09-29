@@ -29,10 +29,11 @@ export default function App() {
 
   const [articles, setArticles] = useState<Article[]>(() => {
     try {
+      const isInit = localStorage.getItem('shelflife_catalog_initialized');
       const cached = localStorage.getItem('shelflife_catalog_cache');
-      if (cached) {
+      if (isInit === 'true' && cached !== null) {
         const parsed = JSON.parse(cached);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed)) return parsed;
       }
     } catch {
       // ignore
@@ -64,17 +65,17 @@ export default function App() {
    * Real-Time Firebase Synchronization across ALL devices
    * Connects via cloud WebSocket listener so all computers, barcode scanners,
    * iPhones, and Android phones stay 100% in sync at the same second.
+   * When data is deleted, empty list [] is honored and permanently stays deleted.
    */
   useEffect(() => {
     const unsubscribe = subscribeToCatalog((realtimeArticles) => {
-      if (realtimeArticles && realtimeArticles.length > 0) {
-        setArticles(realtimeArticles);
-        setIsLiveSynced(true);
-        try {
-          localStorage.setItem('shelflife_catalog_cache', JSON.stringify(realtimeArticles));
-        } catch {
-          // ignore
-        }
+      setArticles(realtimeArticles);
+      setIsLiveSynced(true);
+      try {
+        localStorage.setItem('shelflife_catalog_cache', JSON.stringify(realtimeArticles));
+        localStorage.setItem('shelflife_catalog_initialized', 'true');
+      } catch {
+        // ignore
       }
     });
 
@@ -101,6 +102,7 @@ export default function App() {
     setArticles(sanitized);
     try {
       localStorage.setItem('shelflife_catalog_cache', JSON.stringify(sanitized));
+      localStorage.setItem('shelflife_catalog_initialized', 'true');
       localStorage.removeItem('shelflife_completed_articles');
     } catch {
       // ignore
@@ -112,26 +114,69 @@ export default function App() {
     } catch (err) {
       console.error('Failed to sync upload to Firestore cloud:', err);
     }
+
+    // Also update server backend if in dev mode
+    try {
+      await fetch('/api/catalog', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ articles: sanitized }),
+      });
+    } catch {
+      // ignore
+    }
   };
 
-  // Delete Single Article
+  // Delete Single Article Permanently
   const handleDeleteArticle = async (id: string) => {
-    setArticles((prev) => prev.filter((a) => a.id !== id && a.articleCode !== id));
+    const nextArticles = articles.filter((a) => a.id !== id && a.articleCode !== id);
+    setArticles(nextArticles);
+    try {
+      localStorage.setItem('shelflife_catalog_cache', JSON.stringify(nextArticles));
+      localStorage.setItem('shelflife_catalog_initialized', 'true');
+    } catch {
+      // ignore
+    }
+
     try {
       await deleteArticleFromFirestore(id);
     } catch (err) {
       console.error('Failed to delete from Firestore cloud:', err);
     }
+
+    try {
+      await fetch(`/api/catalog/article/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    } catch {
+      // ignore
+    }
   };
 
-  // Delete Multiple Selected Articles
+  // Delete Multiple Selected Articles Permanently
   const handleDeleteManyArticles = async (ids: string[]) => {
     const idSet = new Set(ids);
-    setArticles((prev) => prev.filter((a) => !idSet.has(a.id) && !idSet.has(a.articleCode)));
+    const nextArticles = articles.filter((a) => !idSet.has(a.id) && !idSet.has(a.articleCode));
+    setArticles(nextArticles);
+    try {
+      localStorage.setItem('shelflife_catalog_cache', JSON.stringify(nextArticles));
+      localStorage.setItem('shelflife_catalog_initialized', 'true');
+    } catch {
+      // ignore
+    }
+
     try {
       await deleteMultipleArticlesFromFirestore(ids);
     } catch (err) {
       console.error('Failed to delete many from Firestore cloud:', err);
+    }
+
+    try {
+      await fetch('/api/catalog/delete-many', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids }),
+      });
+    } catch {
+      // ignore
     }
   };
 
@@ -139,11 +184,23 @@ export default function App() {
   const handleClearCatalog = async () => {
     setArticles([]);
     try {
-      localStorage.removeItem('shelflife_catalog_cache');
+      localStorage.setItem('shelflife_catalog_cache', JSON.stringify([]));
+      localStorage.setItem('shelflife_catalog_initialized', 'true');
       localStorage.removeItem('shelflife_completed_articles');
+    } catch {
+      // ignore
+    }
+
+    try {
       await clearAllCatalogInFirestore();
     } catch (err) {
       console.error('Failed to clear catalog in Firestore cloud:', err);
+    }
+
+    try {
+      await fetch('/api/catalog', { method: 'DELETE' });
+    } catch {
+      // ignore
     }
   };
 
@@ -176,6 +233,20 @@ export default function App() {
       await updateArticleInFirestore(articleId, updates);
     } catch (err) {
       console.error('Failed to update shelf life in Firestore cloud:', err);
+    }
+
+    try {
+      await fetch('/api/catalog/update-shelflife', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          articleId,
+          articleCode,
+          newShelfLifeDays: newDays,
+        }),
+      });
+    } catch {
+      // ignore
     }
   };
 
@@ -228,6 +299,16 @@ export default function App() {
       await recordAuditInFirestore(payload);
     } catch (err) {
       console.error('Failed to record audit in Firestore cloud:', err);
+    }
+
+    try {
+      await fetch('/api/audits', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+    } catch {
+      // ignore
     }
   };
 

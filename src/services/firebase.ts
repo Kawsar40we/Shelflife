@@ -3,13 +3,14 @@ import {
   getFirestore,
   collection,
   doc,
+  getDoc,
   setDoc,
   deleteDoc,
   writeBatch,
   onSnapshot,
   getDocs,
-  limit,
   query,
+  where,
 } from 'firebase/firestore';
 import type { Article, AuditRecord } from '../types';
 
@@ -32,6 +33,7 @@ export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 
 const CATALOG_COLLECTION = 'catalog';
 const AUDITS_COLLECTION = 'audits';
+const META_DOC = 'status';
 
 export const INITIAL_DEFAULT_ARTICLES: Article[] = [
   {
@@ -120,17 +122,24 @@ export const INITIAL_DEFAULT_ARTICLES: Article[] = [
  * Real-Time Catalog Listener:
  * Subscribes to Firestore `catalog` collection. Whenever ANY device adds, deletes,
  * or verifies an article, this callback fires INSTANTLY on all connected devices.
+ * If data was deleted, it calls onUpdate([]) so the deleted state is preserved.
  */
 export function subscribeToCatalog(onUpdate: (articles: Article[]) => void) {
   const colRef = collection(db, CATALOG_COLLECTION);
+  const metaRef = doc(db, 'meta', META_DOC);
 
-  // Check if DB is completely empty on first run, seed default articles
-  getDocs(query(colRef, limit(1))).then((snapshot) => {
-    if (snapshot.empty) {
-      seedInitialCatalog();
+  // One-time initialization check: ONLY seed if the system has NEVER been initialized
+  getDoc(metaRef).then(async (metaSnap) => {
+    if (!metaSnap.exists()) {
+      // First time deployment check
+      const currentSnap = await getDocs(colRef);
+      if (currentSnap.empty) {
+        await seedInitialCatalog();
+      }
+      await setDoc(metaRef, { initialized: true, createdAt: new Date().toISOString() });
     }
   }).catch((err) => {
-    console.warn('Initial catalog check error:', err);
+    console.warn('Meta check notice:', err);
   });
 
   return onSnapshot(
@@ -144,12 +153,15 @@ export function subscribeToCatalog(onUpdate: (articles: Article[]) => void) {
           id: docSnap.id,
         });
       });
-      // Sort to preserve order
+
+      // Sort to preserve stable order
       articles.sort((a, b) => {
         const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
         const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
         return timeA - timeB;
       });
+
+      // Always pass the actual articles array (even if empty after user deletion)
       onUpdate(articles);
     },
     (error) => {
@@ -159,7 +171,7 @@ export function subscribeToCatalog(onUpdate: (articles: Article[]) => void) {
 }
 
 /**
- * Seed initial catalog if empty
+ * Seed initial catalog once if empty
  */
 async function seedInitialCatalog() {
   try {
@@ -178,12 +190,11 @@ async function seedInitialCatalog() {
  * Upload/Replace entire catalog from Admin Excel upload
  */
 export async function uploadCatalogToFirestore(articles: Article[]) {
-  // First delete existing articles in chunks
+  // First delete existing articles in batches
   const colRef = collection(db, CATALOG_COLLECTION);
   const existingSnap = await getDocs(colRef);
 
   const existingDocs = existingSnap.docs;
-  // Firestore batches allow max 500 ops per commit
   for (let i = 0; i < existingDocs.length; i += 400) {
     const batch = writeBatch(db);
     existingDocs.slice(i, i + 400).forEach((d) => batch.delete(d.ref));
@@ -194,10 +205,23 @@ export async function uploadCatalogToFirestore(articles: Article[]) {
   for (let i = 0; i < articles.length; i += 400) {
     const batch = writeBatch(db);
     articles.slice(i, i + 400).forEach((art) => {
-      const ref = doc(db, CATALOG_COLLECTION, art.id);
-      batch.set(ref, art);
+      const docId = art.id || `art-${art.articleCode}`;
+      const ref = doc(db, CATALOG_COLLECTION, docId);
+      batch.set(ref, { ...art, id: docId });
     });
     await batch.commit();
+  }
+
+  // Update meta status
+  try {
+    const metaRef = doc(db, 'meta', META_DOC);
+    await setDoc(metaRef, {
+      initialized: true,
+      lastUploadedAt: new Date().toISOString(),
+      itemCount: articles.length,
+    }, { merge: true });
+  } catch {
+    // ignore
   }
 }
 
@@ -213,15 +237,29 @@ export async function updateArticleInFirestore(
 }
 
 /**
- * Delete single article
+ * Delete single article permanently from Firestore
  */
 export async function deleteArticleFromFirestore(articleId: string) {
+  // Delete by document ID
   const ref = doc(db, CATALOG_COLLECTION, articleId);
   await deleteDoc(ref);
+
+  // Also query to make sure any doc matching articleCode is deleted
+  try {
+    const q = query(collection(db, CATALOG_COLLECTION), where('articleCode', '==', articleId));
+    const snap = await getDocs(q);
+    if (!snap.empty) {
+      const batch = writeBatch(db);
+      snap.docs.forEach((d) => batch.delete(d.ref));
+      await batch.commit();
+    }
+  } catch {
+    // ignore
+  }
 }
 
 /**
- * Delete multiple articles
+ * Delete multiple articles permanently from Firestore
  */
 export async function deleteMultipleArticlesFromFirestore(ids: string[]) {
   const batch = writeBatch(db);
@@ -230,10 +268,27 @@ export async function deleteMultipleArticlesFromFirestore(ids: string[]) {
     batch.delete(ref);
   });
   await batch.commit();
+
+  // Also catch any matching articleCode
+  try {
+    const idSet = new Set(ids);
+    const snap = await getDocs(collection(db, CATALOG_COLLECTION));
+    const toDeleteDocs = snap.docs.filter((d) => {
+      const data = d.data() as Article;
+      return idSet.has(d.id) || idSet.has(data.articleCode) || idSet.has(data.id);
+    });
+    if (toDeleteDocs.length > 0) {
+      const cleanBatch = writeBatch(db);
+      toDeleteDocs.forEach((d) => cleanBatch.delete(d.ref));
+      await cleanBatch.commit();
+    }
+  } catch {
+    // ignore
+  }
 }
 
 /**
- * Clear entire catalog
+ * Clear entire catalog permanently from Firestore
  */
 export async function clearAllCatalogInFirestore() {
   const colRef = collection(db, CATALOG_COLLECTION);
@@ -244,13 +299,25 @@ export async function clearAllCatalogInFirestore() {
     docs.slice(i, i + 400).forEach((d) => batch.delete(d.ref));
     await batch.commit();
   }
+
+  // Set meta to mark cleared so that initial sample data NEVER returns
+  try {
+    const metaRef = doc(db, 'meta', META_DOC);
+    await setDoc(metaRef, {
+      initialized: true,
+      clearedAt: new Date().toISOString(),
+      itemCount: 0,
+    });
+  } catch {
+    // ignore
+  }
 }
 
 /**
  * Record audit log entry in Firestore
  */
 export async function recordAuditInFirestore(audit: AuditRecord) {
-  const id = `audit-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  const id = audit.id || `audit-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
   const ref = doc(db, AUDITS_COLLECTION, id);
   await setDoc(ref, {
     ...audit,
