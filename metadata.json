@@ -1,0 +1,8 @@
+{
+  "name": "Shelf Life Checking",
+  "description": "Shelf life verification and barcode inspection system with master catalog management.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

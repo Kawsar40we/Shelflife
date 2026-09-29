@@ -1,0 +1,87 @@
+{
+  "articles": [
+    {
+      "id": "art-235864",
+      "articleCode": "235864",
+      "articleDescription": "TAMIM TISSUE 200S PACK",
+      "barcode": "2800003990999",
+      "shelfLifeDays": 10,
+      "category": "Hygiene & Paper",
+      "status": "pending",
+      "createdAt": "2026-09-29T15:00:00.000Z"
+    },
+    {
+      "id": "art-102450",
+      "articleCode": "102450",
+      "articleDescription": "ORGANIC WHOLE MILK 1L",
+      "barcode": "8901030381011",
+      "shelfLifeDays": 14,
+      "category": "Dairy & Fresh",
+      "status": "pending",
+      "createdAt": "2026-09-29T15:00:00.000Z"
+    },
+    {
+      "id": "art-319208",
+      "articleCode": "319208",
+      "articleDescription": "ALMARAI GREEK YOGURT 150G",
+      "barcode": "6281007012345",
+      "shelfLifeDays": 21,
+      "category": "Dairy & Fresh",
+      "status": "pending",
+      "createdAt": "2026-09-29T15:00:00.000Z"
+    },
+    {
+      "id": "art-445912",
+      "articleCode": "445912",
+      "articleDescription": "LURPAK SALTED BUTTER 200G",
+      "barcode": "5740900401821",
+      "shelfLifeDays": 60,
+      "category": "Chilled & Butter",
+      "status": "pending",
+      "createdAt": "2026-09-29T15:00:00.000Z"
+    },
+    {
+      "id": "art-556781",
+      "articleCode": "556781",
+      "articleDescription": "FRESH CROISSANT PACK 4S",
+      "barcode": "6291001029384",
+      "shelfLifeDays": 3,
+      "category": "Bakery & Pastry",
+      "status": "pending",
+      "createdAt": "2026-09-29T15:00:00.000Z"
+    },
+    {
+      "id": "art-678120",
+      "articleCode": "678120",
+      "articleDescription": "CHICKEN BREAST FILLET 500G",
+      "barcode": "6281033004567",
+      "shelfLifeDays": 5,
+      "category": "Fresh Meat",
+      "status": "pending",
+      "createdAt": "2026-09-29T15:00:00.000Z"
+    },
+    {
+      "id": "art-789234",
+      "articleCode": "789234",
+      "articleDescription": "ORANGE JUICE FRESH 1L",
+      "barcode": "6292003049581",
+      "shelfLifeDays": 7,
+      "category": "Beverages",
+      "status": "pending",
+      "createdAt": "2026-09-29T15:00:00.000Z"
+    },
+    {
+      "id": "art-890123",
+      "articleCode": "890123",
+      "articleDescription": "CLASSIC WHITE SLICED BREAD",
+      "barcode": "6281011029483",
+      "shelfLifeDays": 6,
+      "category": "Bakery & Pastry",
+      "status": "pending",
+      "createdAt": "2026-09-29T15:00:00.000Z"
+    }
+  ],
+  "audits": [],
+  "initialized": true,
+  "version": 15
+}

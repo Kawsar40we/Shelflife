@@ -1,0 +1,33 @@
+@import "tailwindcss";
+
+@keyframes scanline {
+  0% {
+    top: 10%;
+  }
+  50% {
+    top: 50%;
+  }
+  100% {
+    top: 90%;
+  }
+}
+
+.animate-scanline {
+  animation: scanline 2.2s ease-in-out infinite alternate;
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.4);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.6);
+}
