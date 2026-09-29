@@ -105,7 +105,7 @@ export default function App() {
       const cached = localStorage.getItem('shelflife_catalog_cache');
       if (cached) {
         const parsed = JSON.parse(cached);
-        if (Array.isArray(parsed)) return parsed;
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
       }
     } catch {
       // ignore
@@ -115,6 +115,13 @@ export default function App() {
 
   const catalogVersionRef = useRef<number>(0);
   const isPollingRef = useRef<boolean>(false);
+
+  // Check if running on static host (e.g. GitHub Pages) where backend /api/* does not exist
+  const isStaticHosting =
+    typeof window !== 'undefined' &&
+    (window.location.hostname.includes('github.io') ||
+      window.location.hostname.includes('pages.dev') ||
+      window.location.protocol === 'file:');
 
   const handleSelectRole = (newRole: 'ADMIN' | 'USER') => {
     setRole(newRole);
@@ -134,8 +141,10 @@ export default function App() {
     }
   };
 
-  // Fetch master catalog from server (safe for both full-stack & static hosting like GitHub Pages)
+  // Fetch master catalog from server when running in full-stack mode
   const fetchCatalog = useCallback(async () => {
+    if (isStaticHosting) return;
+
     try {
       const res = await fetch('/api/catalog');
       const contentType = res.headers.get('content-type') || '';
@@ -152,12 +161,14 @@ export default function App() {
         }
       }
     } catch {
-      // Running statically without backend (e.g. GitHub Pages) - keep local state intact
+      // Silent catch for network hiccups
     }
-  }, []);
+  }, [isStaticHosting]);
 
-  // Multi-Device Real-Time Live Sync (every 2.5s)
+  // Live Sync polling (only when not on static host)
   useEffect(() => {
+    if (isStaticHosting) return;
+
     fetchCatalog();
 
     const interval = setInterval(() => {
@@ -169,7 +180,7 @@ export default function App() {
     }, 2500);
 
     return () => clearInterval(interval);
-  }, [fetchCatalog]);
+  }, [fetchCatalog, isStaticHosting]);
 
   // Admin Upload Catalog
   const handleUploadCatalog = async (uploaded: Partial<Article>[]) => {
@@ -193,25 +204,27 @@ export default function App() {
       // ignore
     }
 
-    try {
-      const res = await fetch('/api/catalog', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ articles: uploaded }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data.articles)) {
-          setArticles(data.articles);
-          try {
-            localStorage.setItem('shelflife_catalog_cache', JSON.stringify(data.articles));
-          } catch {
-            // ignore
+    if (!isStaticHosting) {
+      try {
+        const res = await fetch('/api/catalog', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ articles: uploaded }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data.articles)) {
+            setArticles(data.articles);
+            try {
+              localStorage.setItem('shelflife_catalog_cache', JSON.stringify(data.articles));
+            } catch {
+              // ignore
+            }
           }
         }
+      } catch {
+        // Fallback already saved locally
       }
-    } catch {
-      // Static mode (GitHub Pages) - local state already updated
     }
   };
 
@@ -225,23 +238,25 @@ export default function App() {
       // ignore
     }
 
-    try {
-      const res = await fetch(`/api/catalog/article/${encodeURIComponent(id)}`, {
-        method: 'DELETE',
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data.articles)) {
-          setArticles(data.articles);
-          try {
-            localStorage.setItem('shelflife_catalog_cache', JSON.stringify(data.articles));
-          } catch {
-            // ignore
+    if (!isStaticHosting) {
+      try {
+        const res = await fetch(`/api/catalog/article/${encodeURIComponent(id)}`, {
+          method: 'DELETE',
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data.articles)) {
+            setArticles(data.articles);
+            try {
+              localStorage.setItem('shelflife_catalog_cache', JSON.stringify(data.articles));
+            } catch {
+              // ignore
+            }
           }
         }
+      } catch {
+        // Fallback
       }
-    } catch {
-      // Static mode fallback
     }
   };
 
@@ -256,25 +271,27 @@ export default function App() {
       // ignore
     }
 
-    try {
-      const res = await fetch('/api/catalog/delete-many', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ids }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data.articles)) {
-          setArticles(data.articles);
-          try {
-            localStorage.setItem('shelflife_catalog_cache', JSON.stringify(data.articles));
-          } catch {
-            // ignore
+    if (!isStaticHosting) {
+      try {
+        const res = await fetch('/api/catalog/delete-many', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data.articles)) {
+            setArticles(data.articles);
+            try {
+              localStorage.setItem('shelflife_catalog_cache', JSON.stringify(data.articles));
+            } catch {
+              // ignore
+            }
           }
         }
+      } catch {
+        // Fallback
       }
-    } catch {
-      // Static mode fallback
     }
   };
 
@@ -288,10 +305,12 @@ export default function App() {
       // ignore
     }
 
-    try {
-      await fetch('/api/catalog', { method: 'DELETE' });
-    } catch {
-      // Static mode fallback
+    if (!isStaticHosting) {
+      try {
+        await fetch('/api/catalog', { method: 'DELETE' });
+      } catch {
+        // Fallback
+      }
     }
   };
 
@@ -321,18 +340,20 @@ export default function App() {
       // ignore
     }
 
-    try {
-      await fetch('/api/catalog/update-shelflife', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          articleId,
-          articleCode,
-          newShelfLifeDays: newDays,
-        }),
-      });
-    } catch {
-      // Static mode fallback
+    if (!isStaticHosting) {
+      try {
+        await fetch('/api/catalog/update-shelflife', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            articleId,
+            articleCode,
+            newShelfLifeDays: newDays,
+          }),
+        });
+      } catch {
+        // Fallback
+      }
     }
   };
 
@@ -377,25 +398,27 @@ export default function App() {
       // ignore
     }
 
-    try {
-      const res = await fetch('/api/audits', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data.articles)) {
-          setArticles(data.articles);
-          try {
-            localStorage.setItem('shelflife_catalog_cache', JSON.stringify(data.articles));
-          } catch {
-            // ignore
+    if (!isStaticHosting) {
+      try {
+        const res = await fetch('/api/audits', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data.articles)) {
+            setArticles(data.articles);
+            try {
+              localStorage.setItem('shelflife_catalog_cache', JSON.stringify(data.articles));
+            } catch {
+              // ignore
+            }
           }
         }
+      } catch {
+        // Fallback
       }
-    } catch {
-      // Static mode fallback
     }
   };
 
