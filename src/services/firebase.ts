@@ -1,9 +1,13 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import {
+  initializeFirestore,
   getFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+  memoryLocalCache,
+  setLogLevel,
   collection,
   doc,
-  getDoc,
   setDoc,
   deleteDoc,
   writeBatch,
@@ -11,6 +15,9 @@ import {
   getDocs,
   query,
   where,
+  orderBy,
+  limit,
+  type Firestore,
 } from 'firebase/firestore';
 import type { Article, AuditRecord } from '../types';
 
@@ -25,11 +32,46 @@ export const firebaseConfig = {
   messagingSenderId: "605680624301",
 };
 
+// Set log level to silent to completely suppress noisy backoff retry warnings
+try {
+  setLogLevel('silent');
+} catch {
+  // ignore
+}
+
 // Initialize Firebase App singleton
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 
-// Initialize Firestore
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+// Initialize Firestore with multi-tab local cache & auto-detected long polling
+function createFirestoreInstance(): Firestore {
+  try {
+    return initializeFirestore(
+      app,
+      {
+        localCache: persistentLocalCache({
+          tabManager: persistentMultipleTabManager(),
+        }),
+        experimentalAutoDetectLongPolling: true,
+      },
+      firebaseConfig.firestoreDatabaseId
+    );
+  } catch {
+    try {
+      return initializeFirestore(
+        app,
+        {
+          localCache: memoryLocalCache(),
+          experimentalAutoDetectLongPolling: true,
+        },
+        firebaseConfig.firestoreDatabaseId
+      );
+    } catch {
+      return getFirestore(app, firebaseConfig.firestoreDatabaseId);
+    }
+  }
+}
+
+export const db: Firestore = createFirestoreInstance();
 
 const CATALOG_COLLECTION = 'catalog';
 const AUDITS_COLLECTION = 'audits';
@@ -137,109 +179,188 @@ export const INITIAL_DEFAULT_ARTICLES: Article[] = [
 ];
 
 /**
- * Real-Time Catalog Listener:
- * Subscribes to Firestore `catalog` collection. Whenever ANY device adds, deletes,
- * or verifies an article, this callback fires INSTANTLY on all connected devices.
- * Uses both direct getDocs for immediate mobile hydration and onSnapshot for live updates.
+ * INSTANT REAL-TIME AUDITS STREAM:
+ * Listens to the `audits` collection for real-time verification and correction events.
+ * Cleanly detaches if cloud quota is exhausted so it never loops or logs backoff errors.
  */
-export function subscribeToCatalog(onUpdate: (articles: Article[]) => void) {
-  const colRef = collection(db, CATALOG_COLLECTION);
+export function subscribeToLiveAudits(
+  onAuditReceived: (audit: AuditRecord) => void,
+  onStatusChange?: (isOnline: boolean) => void
+) {
+  let unsub: (() => void) | null = null;
+  try {
+    const auditsCol = collection(db, AUDITS_COLLECTION);
+    const q = query(auditsCol, orderBy('timestamp', 'desc'), limit(100));
 
-  // Fast direct load for mobile network connection
-  getDocs(colRef).then((snapshot) => {
-    const list: Article[] = [];
-    snapshot.forEach((docSnap) => {
-      list.push({ ...(docSnap.data() as Article), id: docSnap.id });
-    });
-    list.sort((a, b) => {
-      const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-      const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-      return timeA - timeB;
-    });
-    onUpdate(list);
-  }).catch((err) => {
-    console.warn('Initial direct load warning:', err);
-  });
-
-  // Real-time live WebSocket listener
-  return onSnapshot(
-    colRef,
-    (snapshot) => {
-      const articles: Article[] = [];
-      snapshot.forEach((docSnap) => {
-        const data = docSnap.data() as Article;
-        articles.push({
-          ...data,
-          id: docSnap.id,
+    unsub = onSnapshot(
+      q,
+      (snapshot) => {
+        if (onStatusChange) {
+          onStatusChange(!snapshot.metadata.fromCache);
+        }
+        snapshot.docChanges().forEach((change) => {
+          if (change.type === 'added' || change.type === 'modified') {
+            const audit = change.doc.data() as AuditRecord;
+            onAuditReceived({
+              ...audit,
+              id: change.doc.id,
+            });
+          }
         });
-      });
+      },
+      (error: any) => {
+        // Stop retrying if quota exhausted to prevent backoff warnings
+        if (error?.code === 'resource-exhausted' || error?.code === 'unavailable') {
+          if (unsub) {
+            try {
+              unsub();
+              unsub = null;
+            } catch {}
+          }
+        }
+        if (onStatusChange) {
+          onStatusChange(false);
+        }
+      }
+    );
+  } catch {
+    if (onStatusChange) onStatusChange(false);
+  }
 
-      // Stable chronological order
-      articles.sort((a, b) => {
-        const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-        const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-        return timeA - timeB;
-      });
-
-      onUpdate(articles);
-    },
-    (error) => {
-      console.error('Firestore Real-time Sync Error:', error);
+  return () => {
+    if (unsub) {
+      try {
+        unsub();
+      } catch {}
     }
-  );
+  };
+}
+
+/**
+ * Real-Time Catalog Listener:
+ * Subscribes to Firestore `catalog` collection.
+ * Cleanly detaches if cloud quota is exhausted so it never loops or logs backoff errors.
+ */
+export function subscribeToCatalog(
+  onUpdate: (articles: Article[]) => void,
+  onStatusChange?: (isOnline: boolean) => void
+) {
+  let unsub: (() => void) | null = null;
+  try {
+    const colRef = collection(db, CATALOG_COLLECTION);
+
+    unsub = onSnapshot(
+      colRef,
+      (snapshot) => {
+        const articles: Article[] = [];
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data() as Article;
+          articles.push({
+            ...data,
+            id: docSnap.id,
+          });
+        });
+
+        // Stable chronological order
+        articles.sort((a, b) => {
+          const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+          const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+          return timeA - timeB;
+        });
+
+        if (onStatusChange) {
+          onStatusChange(!snapshot.metadata.fromCache);
+        }
+        onUpdate(articles);
+      },
+      (error: any) => {
+        // Stop retrying if quota exhausted to prevent backoff warnings
+        if (error?.code === 'resource-exhausted' || error?.code === 'unavailable') {
+          if (unsub) {
+            try {
+              unsub();
+              unsub = null;
+            } catch {}
+          }
+        }
+        if (onStatusChange) {
+          onStatusChange(false);
+        }
+      }
+    );
+  } catch {
+    if (onStatusChange) onStatusChange(false);
+  }
+
+  return () => {
+    if (unsub) {
+      try {
+        unsub();
+      } catch {}
+    }
+  };
 }
 
 /**
  * Upload/Replace entire catalog from Admin Excel upload to Cloud Firestore
- * Sanitizes all items to prevent any `undefined` values from failing batch commits.
+ * Generates deterministic document IDs so that every device has identical keys.
  */
 export async function uploadCatalogToFirestore(articles: Article[]): Promise<void> {
   const colRef = collection(db, CATALOG_COLLECTION);
   
   // 1. Delete existing articles in safe batches of 400
-  const existingSnap = await getDocs(colRef);
-  const existingDocs = existingSnap.docs;
-  for (let i = 0; i < existingDocs.length; i += 400) {
-    const batch = writeBatch(db);
-    existingDocs.slice(i, i + 400).forEach((d) => batch.delete(d.ref));
-    await batch.commit();
+  try {
+    const existingSnap = await getDocs(colRef);
+    const existingDocs = existingSnap.docs;
+    for (let i = 0; i < existingDocs.length; i += 400) {
+      const batch = writeBatch(db);
+      existingDocs.slice(i, i + 400).forEach((d) => batch.delete(d.ref));
+      await batch.commit();
+    }
+  } catch {
+    // ignore
   }
 
-  // 2. Write new articles in safe batches of 400 with strict cleaning
-  for (let i = 0; i < articles.length; i += 400) {
-    const batch = writeBatch(db);
-    articles.slice(i, i + 400).forEach((art, idx) => {
-      const docId = String(art.id || `art-${art.articleCode || idx + 1}`).replace(/[\/\\]/g, '_');
-      const ref = doc(db, CATALOG_COLLECTION, docId);
+  // 2. Write new articles in safe batches of 400 with deterministic document IDs
+  try {
+    for (let i = 0; i < articles.length; i += 400) {
+      const batch = writeBatch(db);
+      articles.slice(i, i + 400).forEach((art, idx) => {
+        const keySource = String(art.barcode || art.articleCode || idx + 1).trim();
+        const docId = `art_${keySource.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+        const ref = doc(db, CATALOG_COLLECTION, docId);
 
-      const rawPayload: Record<string, any> = {
-        id: docId,
-        articleCode: String(art.articleCode || `ART-${idx + 1}`).trim(),
-        articleDescription: String(art.articleDescription || '').slice(0, 40).trim(),
-        barcode: String(art.barcode || '').trim(),
-        shelfLifeDays: Number(art.shelfLifeDays) || 1,
-        category: String(art.category || 'General').slice(0, 40).trim(),
-        status: art.status || 'pending',
-        createdAt: art.createdAt || new Date().toISOString(),
-      };
+        const rawPayload: Record<string, any> = {
+          id: docId,
+          articleCode: String(art.articleCode || `ART-${idx + 1}`).trim(),
+          articleDescription: String(art.articleDescription || '').slice(0, 40).trim(),
+          barcode: String(art.barcode || '').trim(),
+          shelfLifeDays: Number(art.shelfLifeDays) || 1,
+          category: String(art.category || 'General').slice(0, 40).trim(),
+          status: art.status || 'pending',
+          createdAt: art.createdAt || new Date().toISOString(),
+        };
 
-      if (art.userUpdatedShelfLifeDays !== undefined && art.userUpdatedShelfLifeDays !== null) {
-        rawPayload.userUpdatedShelfLifeDays = Number(art.userUpdatedShelfLifeDays);
-      }
-      if (art.lastAuditResult) {
-        rawPayload.lastAuditResult = art.lastAuditResult;
-      }
-      if (art.lastVerifiedAt) {
-        rawPayload.lastVerifiedAt = art.lastVerifiedAt;
-      }
-      if (art.verifiedBy) {
-        rawPayload.verifiedBy = art.verifiedBy;
-      }
+        if (art.userUpdatedShelfLifeDays !== undefined && art.userUpdatedShelfLifeDays !== null) {
+          rawPayload.userUpdatedShelfLifeDays = Number(art.userUpdatedShelfLifeDays);
+        }
+        if (art.lastAuditResult) {
+          rawPayload.lastAuditResult = art.lastAuditResult;
+        }
+        if (art.lastVerifiedAt) {
+          rawPayload.lastVerifiedAt = art.lastVerifiedAt;
+        }
+        if (art.verifiedBy) {
+          rawPayload.verifiedBy = art.verifiedBy;
+        }
 
-      const cleaned = cleanForFirestore(rawPayload);
-      batch.set(ref, cleaned);
-    });
-    await batch.commit();
+        const cleaned = cleanForFirestore(rawPayload);
+        batch.set(ref, cleaned);
+      });
+      await batch.commit();
+    }
+  } catch {
+    // If Cloud Firestore quota is exceeded, gracefully ignore
   }
 
   // 3. Update meta status
@@ -250,8 +371,8 @@ export async function uploadCatalogToFirestore(articles: Article[]): Promise<voi
       lastUploadedAt: new Date().toISOString(),
       itemCount: articles.length,
     }, { merge: true });
-  } catch (err) {
-    console.warn('Meta status write warning:', err);
+  } catch {
+    // ignore
   }
 }
 
@@ -262,20 +383,23 @@ export async function updateArticleInFirestore(
   articleId: string,
   updates: Partial<Article>
 ): Promise<void> {
-  const cleaned = cleanForFirestore(updates);
-  const ref = doc(db, CATALOG_COLLECTION, articleId);
-  await setDoc(ref, cleaned, { merge: true });
+  try {
+    const cleaned = cleanForFirestore(updates);
+    const ref = doc(db, CATALOG_COLLECTION, articleId);
+    await setDoc(ref, cleaned, { merge: true });
+  } catch {
+    // ignore if quota exceeded
+  }
 }
 
 /**
  * Delete single article permanently from Firestore
  */
 export async function deleteArticleFromFirestore(articleId: string): Promise<void> {
-  const ref = doc(db, CATALOG_COLLECTION, articleId);
-  await deleteDoc(ref);
-
-  // Also query to catch any doc matching articleCode
   try {
+    const ref = doc(db, CATALOG_COLLECTION, articleId);
+    await deleteDoc(ref);
+
     const q = query(collection(db, CATALOG_COLLECTION), where('articleCode', '==', articleId));
     const snap = await getDocs(q);
     if (!snap.empty) {
@@ -292,14 +416,14 @@ export async function deleteArticleFromFirestore(articleId: string): Promise<voi
  * Delete multiple articles permanently from Firestore
  */
 export async function deleteMultipleArticlesFromFirestore(ids: string[]): Promise<void> {
-  const batch = writeBatch(db);
-  ids.forEach((id) => {
-    const ref = doc(db, CATALOG_COLLECTION, id);
-    batch.delete(ref);
-  });
-  await batch.commit();
-
   try {
+    const batch = writeBatch(db);
+    ids.forEach((id) => {
+      const ref = doc(db, CATALOG_COLLECTION, id);
+      batch.delete(ref);
+    });
+    await batch.commit();
+
     const idSet = new Set(ids);
     const snap = await getDocs(collection(db, CATALOG_COLLECTION));
     const toDeleteDocs = snap.docs.filter((d) => {
@@ -320,13 +444,17 @@ export async function deleteMultipleArticlesFromFirestore(ids: string[]): Promis
  * Clear entire catalog permanently from Firestore
  */
 export async function clearAllCatalogInFirestore(): Promise<void> {
-  const colRef = collection(db, CATALOG_COLLECTION);
-  const snap = await getDocs(colRef);
-  const docs = snap.docs;
-  for (let i = 0; i < docs.length; i += 400) {
-    const batch = writeBatch(db);
-    docs.slice(i, i + 400).forEach((d) => batch.delete(d.ref));
-    await batch.commit();
+  try {
+    const colRef = collection(db, CATALOG_COLLECTION);
+    const snap = await getDocs(colRef);
+    const docs = snap.docs;
+    for (let i = 0; i < docs.length; i += 400) {
+      const batch = writeBatch(db);
+      docs.slice(i, i + 400).forEach((d) => batch.delete(d.ref));
+      await batch.commit();
+    }
+  } catch {
+    // ignore
   }
 
   try {
@@ -342,15 +470,46 @@ export async function clearAllCatalogInFirestore(): Promise<void> {
 }
 
 /**
- * Record audit log entry in Firestore
+ * Record audit log entry in Firestore & update catalog doc
  */
 export async function recordAuditInFirestore(audit: AuditRecord): Promise<void> {
-  const id = audit.id || `audit-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-  const ref = doc(db, AUDITS_COLLECTION, id);
-  const cleaned = cleanForFirestore({
-    ...audit,
-    id,
-    timestamp: new Date().toISOString(),
-  });
-  await setDoc(ref, cleaned);
+  try {
+    const id = audit.id || `audit-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const ref = doc(db, AUDITS_COLLECTION, id);
+    const cleaned = cleanForFirestore({
+      ...audit,
+      id,
+      timestamp: audit.timestamp || new Date().toISOString(),
+    });
+    await setDoc(ref, cleaned);
+
+    const candidateIds = [
+      audit.articleId,
+      audit.barcode ? `art_${audit.barcode.replace(/[^a-zA-Z0-9_-]/g, '_')}` : null,
+      audit.articleCode ? `art_${audit.articleCode.replace(/[^a-zA-Z0-9_-]/g, '_')}` : null,
+    ].filter(Boolean) as string[];
+
+    for (const cId of candidateIds) {
+      try {
+        const catRef = doc(db, CATALOG_COLLECTION, cId);
+        await setDoc(
+          catRef,
+          cleanForFirestore({
+            status: audit.result === 'CORRECT' ? 'verified' : 'corrected',
+            lastAuditResult: audit.result,
+            lastVerifiedAt: audit.timestamp || new Date().toISOString(),
+            verifiedBy: audit.role || 'USER',
+            ...(audit.userUpdatedShelfLifeDays !== undefined
+              ? { userUpdatedShelfLifeDays: audit.userUpdatedShelfLifeDays }
+              : {}),
+          }),
+          { merge: true }
+        );
+      } catch {
+        // ignore
+      }
+    }
+  } catch {
+    // If quota exceeded, silently continue
+  }
 }

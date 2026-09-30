@@ -25,15 +25,32 @@ export const Navbar: React.FC<NavbarProps> = ({ role, onLogout, onExport, isLive
         <div className="flex items-center gap-1.5 sm:gap-2">
           {/* Live Sync Status Indicator */}
           <div
-            className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-slate-50 border border-slate-200 text-[11px] font-semibold text-slate-600"
-            title="Real-Time Cloud Synchronization Active Across All Devices"
+            className={`hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-xl border text-[11px] font-semibold ${
+              isLiveSynced
+                ? 'bg-slate-50 border-slate-200 text-slate-600'
+                : 'bg-amber-50 border-amber-200 text-amber-700'
+            }`}
+            title={
+              isLiveSynced
+                ? 'Real-Time Cloud Synchronization Active Across All Devices'
+                : 'Offline Mode: Local cache active. Changes will sync automatically when reconnected.'
+            }
           >
-            <span className="relative flex h-2 w-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-            </span>
-            <Wifi className="w-3 h-3 text-emerald-600" />
-            <span>Live Sync</span>
+            {isLiveSynced ? (
+              <>
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                </span>
+                <Wifi className="w-3 h-3 text-emerald-600" />
+                <span>Live Sync</span>
+              </>
+            ) : (
+              <>
+                <span className="h-2 w-2 rounded-full bg-amber-500"></span>
+                <span>Offline Ready</span>
+              </>
+            )}
           </div>
 
           {/* User Export Button */}

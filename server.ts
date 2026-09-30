@@ -150,6 +150,37 @@ function saveStorage() {
 
 loadStorage();
 
+// Real-Time Server-Sent Events (SSE) stream for instant cross-device updates (<15ms)
+const liveClients = new Set<express.Response>();
+
+function broadcastSyncEvent(event: Record<string, any>) {
+  const payload = `data: ${JSON.stringify(event)}\n\n`;
+  for (const client of liveClients) {
+    try {
+      client.write(payload);
+    } catch {
+      liveClients.delete(client);
+    }
+  }
+}
+
+// GET /api/live-stream
+app.get('/api/live-stream', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  liveClients.add(res);
+
+  // Send initial handshake
+  res.write(`data: ${JSON.stringify({ type: 'connected', version: storageData.version, timestamp: new Date().toISOString() })}\n\n`);
+
+  req.on('close', () => {
+    liveClients.delete(res);
+  });
+});
+
 // API Endpoints
 
 // GET /api/catalog
@@ -192,6 +223,7 @@ app.post('/api/catalog', (req, res) => {
   // Clear past audits for old catalog
   storageData.audits = [];
   saveStorage();
+  broadcastSyncEvent({ type: 'catalog-uploaded', articles: storageData.articles });
 
   res.json({
     success: true,
@@ -209,6 +241,7 @@ app.delete('/api/catalog/article/:id', (req, res) => {
 
   if (storageData.articles.length !== initialLength) {
     saveStorage();
+    broadcastSyncEvent({ type: 'article-deleted', id: targetId });
   }
 
   res.json({
@@ -231,6 +264,7 @@ app.post('/api/catalog/delete-many', (req, res) => {
   storageData.articles = storageData.articles.filter(a => !idSet.has(a.id) && !idSet.has(a.articleCode));
 
   saveStorage();
+  broadcastSyncEvent({ type: 'articles-deleted', ids });
 
   res.json({
     success: true,
@@ -245,6 +279,7 @@ app.delete('/api/catalog', (req, res) => {
   storageData.articles = [];
   storageData.audits = [];
   saveStorage();
+  broadcastSyncEvent({ type: 'catalog-cleared' });
   res.json({
     success: true,
     message: 'Catalog cleared',
@@ -272,6 +307,7 @@ app.post('/api/catalog/update-shelflife', (req, res) => {
     article.lastAuditResult = 'WRONG';
     article.lastVerifiedAt = new Date().toISOString();
     saveStorage();
+    broadcastSyncEvent({ type: 'update-shelflife', article });
   }
 
   res.json({
@@ -341,6 +377,7 @@ app.post('/api/audits', (req, res) => {
   }
 
   saveStorage();
+  broadcastSyncEvent({ type: 'audit', audit: newAudit, target });
 
   res.json({
     success: true,

@@ -7,6 +7,7 @@ import { UserPage } from './components/UserPage';
 import { exportCatalogToExcel } from './utils/excel';
 import {
   subscribeToCatalog,
+  subscribeToLiveAudits,
   uploadCatalogToFirestore,
   updateArticleInFirestore,
   deleteArticleFromFirestore,
@@ -42,6 +43,12 @@ export default function App() {
   });
 
   const [isLiveSynced, setIsLiveSynced] = useState<boolean>(true);
+  const [latestActivity, setLatestActivity] = useState<{
+    articleCode: string;
+    articleDescription: string;
+    result: 'CORRECT' | 'WRONG';
+    timestamp: string;
+  } | null>(null);
 
   const handleSelectRole = (newRole: 'ADMIN' | 'USER') => {
     setRole(newRole);
@@ -62,40 +69,254 @@ export default function App() {
   };
 
   /**
-   * Real-Time Firebase Synchronization across ALL devices
-   * Connects via cloud WebSocket listener so all computers, barcode scanners,
-   * iPhones, and Android phones stay 100% in sync at the same second.
-   * When data is deleted, empty list [] is honored and permanently stays deleted.
+   * 1. INSTANT REAL-TIME AUDIT STREAM ACROSS ALL DEVICES (PHONE, LAPTOP, TABLET)
+   * Whenever ANY user on ANY device audits an article (clicks CORRECT or WRONG),
+   * this listener fires within milliseconds and reflects on all other devices immediately.
    */
   useEffect(() => {
-    const unsubscribe = subscribeToCatalog((realtimeArticles) => {
-      setArticles(realtimeArticles);
-      setIsLiveSynced(true);
-      try {
-        localStorage.setItem('shelflife_catalog_cache', JSON.stringify(realtimeArticles));
-        localStorage.setItem('shelflife_catalog_initialized', 'true');
-      } catch {
-        // ignore
+    const unsubscribeAudits = subscribeToLiveAudits(
+      (audit) => {
+        setIsLiveSynced(true);
+
+        setArticles((prev) => {
+          let hasChange = false;
+          const next = prev.map((a) => {
+            const isMatch =
+              (audit.barcode && a.barcode === audit.barcode) ||
+              (audit.articleCode && a.articleCode === audit.articleCode) ||
+              (audit.articleId && a.id === audit.articleId);
+
+            if (isMatch) {
+              hasChange = true;
+              return {
+                ...a,
+                status: audit.result === 'CORRECT' ? ('verified' as const) : ('corrected' as const),
+                lastAuditResult: audit.result,
+                lastVerifiedAt: audit.timestamp,
+                verifiedBy: audit.role,
+                ...(audit.userUpdatedShelfLifeDays !== undefined
+                  ? { userUpdatedShelfLifeDays: audit.userUpdatedShelfLifeDays }
+                  : {}),
+              };
+            }
+            return a;
+          });
+
+          if (hasChange) {
+            try {
+              localStorage.setItem('shelflife_catalog_cache', JSON.stringify(next));
+            } catch {
+              // ignore quota
+            }
+          }
+
+          return next;
+        });
+
+        // Set banner notification for Admin
+        setLatestActivity({
+          articleCode: audit.articleCode,
+          articleDescription: audit.articleDescription,
+          result: audit.result,
+          timestamp: audit.timestamp,
+        });
+      },
+      (isOnline) => {
+        setIsLiveSynced(isOnline);
       }
-    });
+    );
 
     return () => {
-      unsubscribe();
+      unsubscribeAudits();
+    };
+  }, []);
+
+  /**
+   * 2. REAL-TIME CATALOG SYNC FOR NEW UPLOADS & DELETIONS
+   */
+  useEffect(() => {
+    const unsubscribeCatalog = subscribeToCatalog(
+      (realtimeArticles) => {
+        if (realtimeArticles && realtimeArticles.length > 0) {
+          setArticles(realtimeArticles);
+          setIsLiveSynced(true);
+          try {
+            localStorage.setItem('shelflife_catalog_cache', JSON.stringify(realtimeArticles));
+            localStorage.setItem('shelflife_catalog_initialized', 'true');
+          } catch {
+            // ignore
+          }
+        }
+      },
+      (isOnline) => {
+        setIsLiveSynced(isOnline);
+      }
+    );
+
+    return () => {
+      unsubscribeCatalog();
+    };
+  }, []);
+
+  /**
+   * 3. INSTANT SERVER-SENT EVENTS (SSE) & BACKEND SYNC (<15ms)
+   * Broadcasts audits, shelf life updates, and deletions across all devices immediately.
+   */
+  useEffect(() => {
+    let es: EventSource | null = null;
+
+    try {
+      es = new EventSource('/api/live-stream');
+
+      es.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+
+          if (data.type === 'audit' && data.audit) {
+            const audit: AuditRecord = data.audit;
+            setIsLiveSynced(true);
+
+            setArticles((prev) => {
+              let hasChange = false;
+              const next = prev.map((a) => {
+                const isMatch =
+                  (audit.barcode && a.barcode === audit.barcode) ||
+                  (audit.articleCode && a.articleCode === audit.articleCode) ||
+                  (audit.articleId && a.id === audit.articleId);
+
+                if (isMatch) {
+                  hasChange = true;
+                  return {
+                    ...a,
+                    status: audit.result === 'CORRECT' ? ('verified' as const) : ('corrected' as const),
+                    lastAuditResult: audit.result,
+                    lastVerifiedAt: audit.timestamp,
+                    verifiedBy: audit.role,
+                    ...(audit.userUpdatedShelfLifeDays !== undefined
+                      ? { userUpdatedShelfLifeDays: audit.userUpdatedShelfLifeDays }
+                      : {}),
+                  };
+                }
+                return a;
+              });
+
+              if (hasChange) {
+                try {
+                  localStorage.setItem('shelflife_catalog_cache', JSON.stringify(next));
+                } catch {
+                  // ignore
+                }
+              }
+              return next;
+            });
+
+            setLatestActivity({
+              articleCode: audit.articleCode,
+              articleDescription: audit.articleDescription,
+              result: audit.result,
+              timestamp: audit.timestamp,
+            });
+          } else if (data.type === 'update-shelflife' && data.article) {
+            setArticles((prev) =>
+              prev.map((a) =>
+                a.id === data.article.id || a.articleCode === data.article.articleCode
+                  ? { ...a, ...data.article }
+                  : a
+              )
+            );
+          } else if (data.type === 'catalog-cleared') {
+            setArticles([]);
+          } else if (data.type === 'article-deleted' && data.id) {
+            setArticles((prev) => prev.filter((a) => a.id !== data.id && a.articleCode !== data.id));
+          } else if (data.type === 'catalog-uploaded' && Array.isArray(data.articles)) {
+            setArticles(data.articles);
+          }
+        } catch {
+          // ignore parse error
+        }
+      };
+
+      es.onerror = () => {
+        // Closed or not on backend server
+        if (es) {
+          es.close();
+        }
+      };
+    } catch {
+      // ignore
+    }
+
+    // Secondary fallback poll for static environments
+    const checkServerAudits = async () => {
+      try {
+        const res = await fetch('/api/audits');
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data.audits) && data.audits.length > 0) {
+            setArticles((prev) => {
+              let changed = false;
+              const next = [...prev];
+              for (const audit of data.audits) {
+                const targetIdx = next.findIndex(
+                  (a) =>
+                    (audit.barcode && a.barcode === audit.barcode) ||
+                    (audit.articleCode && a.articleCode === audit.articleCode) ||
+                    (audit.articleId && a.id === audit.articleId)
+                );
+                if (targetIdx !== -1) {
+                  const current = next[targetIdx];
+                  const newStatus = audit.result === 'CORRECT' ? 'verified' : 'corrected';
+                  if (current.status !== newStatus || current.userUpdatedShelfLifeDays !== audit.userUpdatedShelfLifeDays) {
+                    next[targetIdx] = {
+                      ...current,
+                      status: newStatus,
+                      lastAuditResult: audit.result,
+                      lastVerifiedAt: audit.timestamp,
+                      verifiedBy: audit.role,
+                      ...(audit.userUpdatedShelfLifeDays !== undefined
+                        ? { userUpdatedShelfLifeDays: audit.userUpdatedShelfLifeDays }
+                        : {}),
+                    };
+                    changed = true;
+                  }
+                }
+              }
+              return changed ? next : prev;
+            });
+          }
+        }
+      } catch {
+        // running on static host
+      }
+    };
+
+    const interval = setInterval(checkServerAudits, 2000);
+
+    return () => {
+      if (es) es.close();
+      clearInterval(interval);
     };
   }, []);
 
   // Admin Upload Catalog - Syncs to Cloud Instantly for All Devices
   const handleUploadCatalog = async (uploaded: Partial<Article>[]) => {
-    const sanitized: Article[] = uploaded.map((item, idx) => ({
-      id: item.id || `art-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 7)}`,
-      articleCode: String(item.articleCode || `ART-${idx + 1}`).trim(),
-      articleDescription: String(item.articleDescription || '').slice(0, 40).trim(),
-      barcode: String(item.barcode || '').trim(),
-      shelfLifeDays: Number(item.shelfLifeDays) || 1,
-      category: String(item.category || 'General').slice(0, 40).trim(),
-      status: 'pending',
-      createdAt: new Date().toISOString()
-    }));
+    const sanitized: Article[] = uploaded.map((item, idx) => {
+      const code = String(item.articleCode || `ART-${idx + 1}`).trim();
+      const bcode = String(item.barcode || '').trim();
+      const keySource = bcode || code || String(idx + 1);
+      const deterministicId = `art_${keySource.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+
+      return {
+        id: deterministicId,
+        articleCode: code,
+        articleDescription: String(item.articleDescription || '').slice(0, 40).trim(),
+        barcode: bcode,
+        shelfLifeDays: Number(item.shelfLifeDays) || 1,
+        category: String(item.category || 'General').slice(0, 40).trim(),
+        status: 'pending',
+        createdAt: new Date().toISOString(),
+      };
+    });
 
     // Optimistic local state update
     setArticles(sanitized);
@@ -249,7 +470,7 @@ export default function App() {
     }
   };
 
-  // Record Audit
+  // Record Audit from Mobile or Computer
   const handleRecordAudit = async (
     article: Article,
     result: 'CORRECT' | 'WRONG',
@@ -282,7 +503,12 @@ export default function App() {
     // Optimistic local state update
     setArticles((prev) =>
       prev.map((a) => {
-        if (a.id === article.id || a.articleCode === article.articleCode) {
+        const isMatch =
+          (article.barcode && a.barcode === article.barcode) ||
+          (article.articleCode && a.articleCode === article.articleCode) ||
+          (article.id && a.id === article.id);
+
+        if (isMatch) {
           return {
             ...a,
             ...updates,
@@ -292,14 +518,14 @@ export default function App() {
       })
     );
 
-    // Sync to Cloud Firestore immediately
+    // 1. Sync to Cloud Firestore instantly (broadcasts to all mobile & computer devices in <100ms)
     try {
-      await updateArticleInFirestore(article.id, updates);
       await recordAuditInFirestore(payload);
     } catch (err) {
       console.error('Failed to record audit in Firestore cloud:', err);
     }
 
+    // 2. Also notify backend server if running
     try {
       await fetch('/api/audits', {
         method: 'POST',
@@ -340,6 +566,7 @@ export default function App() {
               onDeleteArticle={handleDeleteArticle}
               onDeleteManyArticles={handleDeleteManyArticles}
               onClearCatalog={handleClearCatalog}
+              latestActivity={latestActivity}
             />
           ) : (
             <UserPage

@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import {
   Upload,
   Download,
@@ -7,6 +7,10 @@ import {
   CheckCircle2,
   AlertTriangle,
   FileSpreadsheet,
+  ChevronLeft,
+  ChevronRight,
+  Sparkles,
+  Layers,
 } from 'lucide-react';
 import type { Article } from '../types';
 import { parseExcelFile, downloadExcelTemplate, exportCatalogToExcel } from '../utils/excel';
@@ -18,7 +22,15 @@ interface AdminPageProps {
   onDeleteArticle: (id: string) => Promise<void>;
   onDeleteManyArticles: (ids: string[]) => Promise<void>;
   onClearCatalog: () => Promise<void>;
+  latestActivity?: {
+    articleCode: string;
+    articleDescription: string;
+    result: 'CORRECT' | 'WRONG';
+    timestamp: string;
+  } | null;
 }
+
+const ITEMS_PER_PAGE = 50;
 
 export const AdminPage: React.FC<AdminPageProps> = ({
   articles,
@@ -26,9 +38,12 @@ export const AdminPage: React.FC<AdminPageProps> = ({
   onDeleteArticle,
   onDeleteManyArticles,
   onClearCatalog,
+  latestActivity,
 }) => {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'ALL' | 'VERIFIED' | 'CORRECTED' | 'PENDING'>('ALL');
+  const [currentPage, setCurrentPage] = useState(1);
   const [isClearConfirmOpen, setIsClearConfirmOpen] = useState(false);
   const [isDeleteSelectedConfirmOpen, setIsDeleteSelectedConfirmOpen] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
@@ -37,9 +52,30 @@ export const AdminPage: React.FC<AdminPageProps> = ({
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Compute live verification counts
+  const stats = useMemo(() => {
+    let verified = 0;
+    let corrected = 0;
+    let pending = 0;
+
+    for (const a of articles) {
+      if (a.status === 'verified') verified++;
+      else if (a.status === 'corrected') corrected++;
+      else pending++;
+    }
+
+    return { total: articles.length, verified, corrected, pending };
+  }, [articles]);
+
+  // Reset selection on article length change
   useEffect(() => {
     setSelectedIds(new Set());
   }, [articles.length]);
+
+  // Reset page to 1 on filter or search change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, statusFilter]);
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -75,20 +111,37 @@ export const AdminPage: React.FC<AdminPageProps> = ({
     }
   };
 
-  const filteredArticles = articles.filter((art) => {
+  // Filter articles based on search & status tab
+  const filteredArticles = useMemo(() => {
     const q = searchQuery.toLowerCase().trim();
-    return (
-      !q ||
-      art.articleCode.toLowerCase().includes(q) ||
-      art.articleDescription.toLowerCase().includes(q) ||
-      art.barcode.toLowerCase().includes(q) ||
-      art.category.toLowerCase().includes(q)
-    );
-  });
+    return articles.filter((art) => {
+      // 1. Status Filter
+      if (statusFilter === 'VERIFIED' && art.status !== 'verified') return false;
+      if (statusFilter === 'CORRECTED' && art.status !== 'corrected') return false;
+      if (statusFilter === 'PENDING' && (art.status === 'verified' || art.status === 'corrected')) return false;
+
+      // 2. Search Query
+      if (!q) return true;
+      return (
+        art.articleCode.toLowerCase().includes(q) ||
+        art.articleDescription.toLowerCase().includes(q) ||
+        art.barcode.toLowerCase().includes(q) ||
+        art.category.toLowerCase().includes(q)
+      );
+    });
+  }, [articles, searchQuery, statusFilter]);
+
+  // Pagination calculation
+  const totalPages = Math.max(1, Math.ceil(filteredArticles.length / ITEMS_PER_PAGE));
+  const paginatedArticles = useMemo(() => {
+    const start = (currentPage - 1) * ITEMS_PER_PAGE;
+    return filteredArticles.slice(start, start + ITEMS_PER_PAGE);
+  }, [filteredArticles, currentPage]);
 
   const handleSelectAll = (checked: boolean) => {
     if (checked) {
-      setSelectedIds(new Set(filteredArticles.map((a) => a.id)));
+      const allIds = new Set(paginatedArticles.map((a) => a.id));
+      setSelectedIds(allIds);
     } else {
       setSelectedIds(new Set());
     }
@@ -144,14 +197,63 @@ export const AdminPage: React.FC<AdminPageProps> = ({
         className="hidden"
       />
 
-      {/* Clean Top Action Bar */}
+      {/* Real-Time Live Activity Notification Banner */}
+      {latestActivity && (
+        <div className="px-4 py-2.5 rounded-2xl bg-purple-50 border border-purple-200/80 shadow-xs flex items-center justify-between gap-3 animate-in fade-in slide-in-from-top-2 duration-300">
+          <div className="flex items-center gap-2.5 text-xs text-purple-900 font-semibold truncate">
+            <span className="relative flex h-2.5 w-2.5 shrink-0">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-purple-600"></span>
+            </span>
+            <Sparkles className="w-4 h-4 text-purple-600 shrink-0" />
+            <span className="truncate">
+              Live Update: Article <strong className="font-mono text-purple-950 font-bold">{latestActivity.articleCode}</strong> was marked as{' '}
+              <span
+                className={`px-1.5 py-0.5 rounded font-black text-[11px] ${
+                  latestActivity.result === 'CORRECT'
+                    ? 'bg-emerald-100 text-emerald-800'
+                    : 'bg-amber-100 text-amber-800'
+                }`}
+              >
+                {latestActivity.result}
+              </span>{' '}
+              on mobile
+            </span>
+          </div>
+          <span className="text-[11px] text-purple-600 shrink-0 font-medium">Just now</span>
+        </div>
+      )}
+
+      {/* Top Action & Live Stats Bar */}
       <div className="flex flex-wrap items-center justify-between gap-3 bg-white p-3.5 rounded-2xl border border-slate-200 shadow-xs">
-        <div className="flex items-center gap-2">
-          <span className="font-extrabold text-sm text-slate-800">
-            Catalog: <span className="font-mono text-purple-700">{articles.length}</span> Items
-          </span>
+        {/* Live Counters */}
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100 text-slate-800 text-xs font-bold">
+            <Layers className="w-3.5 h-3.5 text-slate-500" />
+            <span>Total:</span>
+            <span className="font-mono text-slate-900 font-black">{stats.total}</span>
+          </div>
+
+          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-50 border border-emerald-200/70 text-emerald-800 text-xs font-bold">
+            <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+            <span>Verified:</span>
+            <span className="font-mono text-emerald-900 font-black">{stats.verified}</span>
+          </div>
+
+          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-50 border border-amber-200/70 text-amber-800 text-xs font-bold">
+            <span className="w-2 h-2 rounded-full bg-amber-500"></span>
+            <span>Corrected:</span>
+            <span className="font-mono text-amber-900 font-black">{stats.corrected}</span>
+          </div>
+
+          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-50 border border-slate-200 text-slate-600 text-xs font-bold">
+            <span className="w-2 h-2 rounded-full bg-slate-400"></span>
+            <span>Pending:</span>
+            <span className="font-mono text-slate-700 font-black">{stats.pending}</span>
+          </div>
         </div>
 
+        {/* Action Buttons */}
         <div className="flex flex-wrap items-center gap-2">
           {/* Upload Excel */}
           <button
@@ -165,11 +267,11 @@ export const AdminPage: React.FC<AdminPageProps> = ({
 
           {/* Download Template */}
           <button
-            onClick={() => downloadExcelTemplate()}
+            onClick={downloadExcelTemplate}
             className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs transition cursor-pointer"
           >
             <Download className="w-3.5 h-3.5" />
-            <span>Download Template (.xlsx)</span>
+            <span>Template</span>
           </button>
 
           {/* Export Excel */}
@@ -179,18 +281,18 @@ export const AdminPage: React.FC<AdminPageProps> = ({
               className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs transition cursor-pointer"
             >
               <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
-              <span>Export Excel</span>
+              <span>Export</span>
             </button>
           )}
 
-          {/* Clear / Delete All Data */}
+          {/* Clear All Data */}
           {articles.length > 0 && (
             <button
               onClick={() => setIsClearConfirmOpen(true)}
               className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-bold text-xs transition cursor-pointer"
             >
               <Trash2 className="w-3.5 h-3.5" />
-              <span>Delete All Data</span>
+              <span>Delete All</span>
             </button>
           )}
         </div>
@@ -219,7 +321,6 @@ export const AdminPage: React.FC<AdminPageProps> = ({
 
       {/* Main Content Area */}
       {articles.length === 0 ? (
-        // Simple Empty State Upload Box
         <div className="bg-white rounded-3xl p-8 border-2 border-dashed border-slate-300 text-center shadow-xs">
           <div
             onClick={triggerUploadClick}
@@ -237,21 +338,58 @@ export const AdminPage: React.FC<AdminPageProps> = ({
           </div>
         </div>
       ) : (
-        // Catalog Table
         <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden p-4 space-y-3">
-          {/* Search bar & Delete Selected */}
+          {/* Controls: Search, Tabs & Bulk Actions */}
           <div className="flex flex-wrap items-center justify-between gap-3">
+            {/* Search Input */}
             <div className="relative flex-1 min-w-[200px] max-w-sm">
               <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
               <input
                 type="text"
-                placeholder="Search articles..."
+                placeholder="Search code, description, barcode..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="w-full pl-8 pr-3 py-1.5 rounded-xl border border-slate-200 focus:border-purple-600 text-xs text-slate-800 outline-none"
               />
             </div>
 
+            {/* Filter Tabs */}
+            <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-xl">
+              <button
+                onClick={() => setStatusFilter('ALL')}
+                className={`px-3 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
+                  statusFilter === 'ALL' ? 'bg-white text-purple-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                All ({stats.total})
+              </button>
+              <button
+                onClick={() => setStatusFilter('VERIFIED')}
+                className={`px-3 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
+                  statusFilter === 'VERIFIED' ? 'bg-emerald-600 text-white shadow-xs' : 'text-slate-600 hover:text-emerald-700'
+                }`}
+              >
+                Verified ({stats.verified})
+              </button>
+              <button
+                onClick={() => setStatusFilter('CORRECTED')}
+                className={`px-3 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
+                  statusFilter === 'CORRECTED' ? 'bg-amber-600 text-white shadow-xs' : 'text-slate-600 hover:text-amber-700'
+                }`}
+              >
+                Corrected ({stats.corrected})
+              </button>
+              <button
+                onClick={() => setStatusFilter('PENDING')}
+                className={`px-3 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
+                  statusFilter === 'PENDING' ? 'bg-slate-700 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Pending ({stats.pending})
+              </button>
+            </div>
+
+            {/* Bulk Delete Button */}
             {selectedIds.size > 0 && (
               <button
                 onClick={() => setIsDeleteSelectedConfirmOpen(true)}
@@ -263,7 +401,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({
             )}
           </div>
 
-          {/* Table */}
+          {/* Catalog Table */}
           <div className="overflow-x-auto rounded-xl border border-slate-200">
             <table className="w-full text-left text-xs border-collapse">
               <thead className="bg-slate-100 text-slate-700 font-extrabold uppercase tracking-wider text-[10px]">
@@ -272,8 +410,8 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                     <input
                       type="checkbox"
                       checked={
-                        filteredArticles.length > 0 &&
-                        filteredArticles.every((a) => selectedIds.has(a.id))
+                        paginatedArticles.length > 0 &&
+                        paginatedArticles.every((a) => selectedIds.has(a.id))
                       }
                       onChange={(e) => handleSelectAll(e.target.checked)}
                       className="rounded text-purple-600 w-3.5 h-3.5 cursor-pointer"
@@ -283,7 +421,6 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                   <th className="py-2.5 px-3">Articles Description</th>
                   <th className="py-2.5 px-3">Barcode</th>
                   <th className="py-2.5 px-3 text-center">Shleflfe (Admin)</th>
-                  {/* Additional column showing what user entered on WRONG without touching admin uploaded data */}
                   <th className="py-2.5 px-3 text-center bg-purple-50 text-purple-900">
                     User Updated (Days)
                   </th>
@@ -293,20 +430,28 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 font-medium">
-                {filteredArticles.length === 0 ? (
+                {paginatedArticles.length === 0 ? (
                   <tr>
                     <td colSpan={9} className="py-8 text-center text-slate-400 text-xs">
-                      No articles match your search.
+                      No articles match your filter or search.
                     </td>
                   </tr>
                 ) : (
-                  filteredArticles.map((art) => {
+                  paginatedArticles.map((art) => {
                     const isSelected = selectedIds.has(art.id);
+                    const isRecentlyUpdated =
+                      art.lastVerifiedAt &&
+                      Date.now() - new Date(art.lastVerifiedAt).getTime() < 30000;
+
                     return (
                       <tr
                         key={art.id}
                         className={`hover:bg-slate-50 transition ${
-                          isSelected ? 'bg-purple-50/50' : ''
+                          isSelected
+                            ? 'bg-purple-50/50'
+                            : isRecentlyUpdated
+                            ? 'bg-emerald-50/60'
+                            : ''
                         }`}
                       >
                         <td className="py-2 px-3 text-center">
@@ -326,11 +471,9 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                         <td className="py-2 px-3 font-mono text-slate-600 whitespace-nowrap">
                           {art.barcode}
                         </td>
-                        {/* Admin uploaded shelf life - untouched! */}
                         <td className="py-2 px-3 text-center font-mono font-bold text-slate-800 whitespace-nowrap">
                           {art.shelfLifeDays} Days
                         </td>
-                        {/* User updated shelf life - additional column */}
                         <td className="py-2 px-3 text-center font-mono font-bold whitespace-nowrap bg-purple-50/40">
                           {art.userUpdatedShelfLifeDays !== undefined ? (
                             <span className="px-2 py-0.5 rounded-md bg-amber-100 text-amber-800 font-black">
@@ -345,15 +488,18 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                         </td>
                         <td className="py-2 px-3 text-center whitespace-nowrap">
                           {art.status === 'verified' ? (
-                            <span className="px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-800 text-[10px] font-bold">
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-extrabold shadow-2xs">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
                               Verified
                             </span>
                           ) : art.status === 'corrected' ? (
-                            <span className="px-2 py-0.5 rounded-md bg-amber-100 text-amber-800 text-[10px] font-bold">
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10px] font-extrabold shadow-2xs">
+                              <span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
                               User Corrected
                             </span>
                           ) : (
-                            <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-600 text-[10px] font-bold">
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-600 text-[10px] font-bold">
+                              <span className="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
                               Pending
                             </span>
                           )}
@@ -361,7 +507,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                         <td className="py-2 px-3 text-right whitespace-nowrap">
                           <button
                             onClick={() => handleDeleteSingleRow(art.id)}
-                            className="px-2 py-1 rounded text-rose-600 hover:bg-rose-50 font-bold text-xs transition"
+                            className="px-2 py-1 rounded text-rose-600 hover:bg-rose-50 font-bold text-xs transition cursor-pointer"
                           >
                             Delete
                           </button>
@@ -373,6 +519,47 @@ export const AdminPage: React.FC<AdminPageProps> = ({
               </tbody>
             </table>
           </div>
+
+          {/* Pagination Controls */}
+          {filteredArticles.length > ITEMS_PER_PAGE && (
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-2 text-xs text-slate-600">
+              <div>
+                Showing{' '}
+                <span className="font-semibold text-slate-900">
+                  {(currentPage - 1) * ITEMS_PER_PAGE + 1}
+                </span>{' '}
+                to{' '}
+                <span className="font-semibold text-slate-900">
+                  {Math.min(currentPage * ITEMS_PER_PAGE, filteredArticles.length)}
+                </span>{' '}
+                of <span className="font-semibold text-slate-900">{filteredArticles.length}</span> entries
+              </div>
+
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                  disabled={currentPage === 1}
+                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed font-medium transition cursor-pointer"
+                >
+                  <ChevronLeft className="w-3.5 h-3.5" />
+                  <span>Previous</span>
+                </button>
+
+                <div className="px-3 py-1 font-semibold text-slate-700">
+                  Page {currentPage} of {totalPages}
+                </div>
+
+                <button
+                  onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={currentPage === totalPages}
+                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed font-medium transition cursor-pointer"
+                >
+                  <span>Next</span>
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

@@ -81,7 +81,21 @@
       "createdAt": "2026-09-29T15:00:00.000Z"
     }
   ],
-  "audits": [],
+  "audits": [
+    {
+      "id": "audit-1790749311624-fwd7h",
+      "timestamp": "2026-09-30T06:21:51.624Z",
+      "articleId": "",
+      "articleCode": "100068",
+      "articleDescription": "",
+      "barcode": "",
+      "category": "",
+      "result": "CORRECT",
+      "adminShelfLifeDays": 0,
+      "role": "USER",
+      "deviceId": "Device"
+    }
+  ],
   "initialized": true,
-  "version": 22
+  "version": 23
 }
